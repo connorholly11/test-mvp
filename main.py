@@ -2,13 +2,15 @@ from flask import Flask, render_template, request, redirect, url_for, session, f
 from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
-import ts_connection
 import ts_orders
+import ts_connection
 import json
 import logging
 import traceback
 from functools import wraps
 from datetime import timedelta
+from ts_connection import start_streaming, get_latest_data
+
 
 # Load environment variables
 load_dotenv()
@@ -23,7 +25,7 @@ app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=8)  # Set session lif
 
 supabase: Client = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_ANON_KEY'))
 
-# Start the TradeStation data streaming
+# Start the market data streaming
 ts_connection.start_streaming()
 
 def login_required(f):
@@ -31,7 +33,17 @@ def login_required(f):
     def decorated_function(*args, **kwargs):
         if 'user_id' not in session:
             logging.warning("Unauthenticated access attempt")
-            return jsonify({'error': 'Not authenticated'}), 401
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def api_login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            logging.warning(f"Unauthenticated API access attempt. Session: {session}")
+            return jsonify({'error': 'Not authenticated', 'redirect': url_for('login')}), 401
+        logging.info(f"Authenticated API access. User ID: {session['user_id']}")
         return f(*args, **kwargs)
     return decorated_function
 
@@ -95,7 +107,7 @@ def login():
 @app.route('/logout')
 def logout():
     logging.info(f"User logged out: {session.get('user_id')}")
-    session.pop('user_id', None)
+    session.clear()
     flash('Logged out successfully.')
     return redirect(url_for('login'))
 
@@ -109,32 +121,45 @@ def trading():
     logging.info(f"User {username} accessed trading page")
     return render_template('trading.html', username=username)
 
-@app.route('/api/balance')
-@login_required
-def get_balance():
-    logging.info(f"Balance request for user {session['user_id']}")
-    balance = ts_orders.get_account_balance('SIM1169695F')
-    logging.info(f"Balance for user {session['user_id']}: {balance}")
-    return jsonify({'balance': balance})
+@app.route('/api/market_data')
+@api_login_required
+def get_market_data():
+    latest_data = get_latest_data()
+    logging.info(f"Market data request: {latest_data}")
+    return jsonify(latest_data)
+
+@app.route('/api/account_summary')
+@api_login_required
+def get_account_summary():
+    logging.info(f"Fetching account summary for user {session['user_id']}")
+    try:
+        account_id = os.getenv('TRADESTATION_ACCOUNT_ID_SIM')
+        account_summary = ts_orders.get_account_summary(account_id)
+        logging.info(f"Account summary for user {session['user_id']}: {account_summary}")
+        return jsonify(account_summary)
+    except Exception as e:
+        logging.error(f"Error fetching account summary: {str(e)}")
+        return jsonify({'error': 'Unable to fetch account summary at this time'}), 500
 
 @app.route('/api/positions')
-@login_required
+@api_login_required
 def get_positions():
     logging.info(f"Fetching positions for user {session['user_id']}")
     try:
-        positions = ts_orders.get_positions('SIM1169695F')
+        account_id = os.getenv('TRADESTATION_ACCOUNT_ID_SIM')
+        positions = ts_orders.get_positions(account_id)
         latest_data = ts_connection.get_latest_data()
         
         position_data = []
         for position in positions:
             current_price = float(latest_data.get('Close', 0))
-            unrealized_pl = (current_price - position['average_price']) * position['quantity']
+            unrealized_pl = (current_price - position['AveragePrice']) * position['Quantity']
             
             position_data.append({
-                'symbol': position['symbol'],
-                'quantity': position['quantity'],
-                'average_price': position['average_price'],
-                'current_value': current_price * abs(position['quantity']),
+                'symbol': position['Symbol'],
+                'quantity': position['Quantity'],
+                'average_price': position['AveragePrice'],
+                'current_value': current_price * abs(position['Quantity']),
                 'unrealized_pl': unrealized_pl
             })
         
@@ -145,16 +170,17 @@ def get_positions():
         return jsonify({'error': 'Unable to fetch positions at this time'}), 500
 
 @app.route('/api/trade', methods=['POST'])
-@login_required
+@api_login_required
 def place_trade():
     data = request.json
     logging.info(f"Trade request received: {data}")
     
     action = data.get('action')
     quantity = data.get('quantity')
-    symbol = data.get('symbol')
+    symbol = data.get('symbol', 'NQU24')  # Changed from '@NQU24' to 'NQU24'
+    account_id = os.getenv('TRADESTATION_ACCOUNT_ID_SIM')
     
-    if not all([action, quantity, symbol]):
+    if not all([action, quantity, symbol, account_id]):
         logging.error(f"Invalid trade request: Missing required fields. Data: {data}")
         return jsonify({'success': False, 'message': 'Invalid trade request: Missing required fields'}), 400
     
@@ -164,55 +190,40 @@ def place_trade():
         logging.error(f"Invalid quantity: {quantity}. Must be an integer.")
         return jsonify({'success': False, 'message': 'Invalid quantity: Must be an integer'}), 400
     
-    logging.info(f"Placing trade: User {session['user_id']} - {action} {quantity} {symbol}")
+    trade_action = action.upper()
+    
+    logging.info(f"Placing trade: User {session['user_id']} - {trade_action} {quantity} {symbol}")
     
     try:
-        order_result = ts_orders.place_order('SIM1169695F', symbol, action, quantity)
+        order_result = ts_orders.place_order(
+            account_id=account_id,
+            symbol=symbol,
+            quantity=quantity,
+            order_type="Market",
+            trade_action=trade_action
+        )
         logging.info(f"Order result: {order_result}")
         
-        if order_result['status'] == 'Filled':
-            logging.info(f"Order filled: {order_result}")
-            return jsonify({
-                'success': True,
-                'message': f'{action.capitalize()} order for {quantity} {symbol} filled at {order_result["fill_price"]}.',
-                'order_details': order_result
-            })
-        elif order_result['status'] == 'Working':
-            logging.info(f"Order working: {order_result}")
-            return jsonify({
-                'success': True,
-                'message': f'{action.capitalize()} order for {quantity} {symbol} placed. Order ID: {order_result["order_id"]}',
-                'order_details': order_result
-            })
+        if 'Orders' in order_result and len(order_result['Orders']) > 0:
+            if order_result['Orders'][0].get('Status') == 'OK':
+                return jsonify({
+                    'success': True,
+                    'message': f"{action.capitalize()} order for {quantity} {symbol} placed successfully.",
+                    'order_details': order_result['Orders'][0]
+                })
+            else:
+                error_message = order_result['Orders'][0].get('Message', 'Unknown error occurred')
+                return jsonify({'success': False, 'message': f'Failed to place order: {error_message}'}), 400
         else:
-            logging.error(f"Unexpected order status: {order_result}")
-            return jsonify({'success': False, 'message': f'Unexpected order status: {order_result["status"]}'})
+            logging.error(f"Unexpected order result: {order_result}")
+            return jsonify({'success': False, 'message': f'Failed to place order: Unexpected response'}), 500
     except Exception as e:
         logging.error(f"Error placing order: {str(e)}")
         logging.error(traceback.format_exc())
         return jsonify({'success': False, 'message': f'Failed to place order: {str(e)}'}), 500
 
-@app.route('/api/market_data')
-@login_required
-def get_market_data():
-    market_data = ts_connection.get_latest_data()
-    logging.info(f"Market data request: {market_data}")
-    return jsonify(market_data)
-
-@app.route('/api/account_summary')
-@login_required
-def get_account_summary():
-    logging.info(f"Fetching account summary for user {session['user_id']}")
-    try:
-        account_summary = ts_orders.get_account_summary('SIM1169695F')
-        logging.info(f"Account summary for user {session['user_id']}: {account_summary}")
-        return jsonify(account_summary)
-    except Exception as e:
-        logging.error(f"Error fetching account summary: {str(e)}")
-        return jsonify({'error': 'Unable to fetch account summary at this time'}), 500
-
 @app.route('/api/reset/<username>', methods=['GET', 'POST'])
-@login_required
+@api_login_required
 def reset_user(username):
     logging.info(f"Reset request for user: {username}")
     try:
