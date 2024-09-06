@@ -18,7 +18,7 @@ API_SECRET = os.getenv('TRADESTATION_API_SECRET_SIM')
 REFRESH_TOKEN = os.getenv('TRADESTATION_REFRESH_TOKEN_SIM')
 BASE_URL = "https://sim-api.tradestation.com"
 
-SYMBOL = '@MNQ'  # Fixed symbol for Micro E-mini Nasdaq-100 futures
+SYMBOL = '@MNQU24'  # Fixed symbol for Micro E-mini Nasdaq-100 futures
 
 # Global variable to store the latest data
 latest_data = {}

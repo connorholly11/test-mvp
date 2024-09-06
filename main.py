@@ -3,10 +3,10 @@ from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
 import ts_connection
-import nt_connection
+import ts_orders
 import json
 import logging
-import time
+import traceback
 from functools import wraps
 from datetime import timedelta
 
@@ -25,9 +25,6 @@ supabase: Client = create_client(os.getenv('SUPABASE_URL'), os.getenv('SUPABASE_
 
 # Start the TradeStation data streaming
 ts_connection.start_streaming()
-
-# Start NinjaTrader monitoring
-nt_connection.start_monitoring()
 
 def login_required(f):
     @wraps(f)
@@ -116,8 +113,7 @@ def trading():
 @login_required
 def get_balance():
     logging.info(f"Balance request for user {session['user_id']}")
-    user = supabase.table('users').select('balance').eq('id', session['user_id']).execute()
-    balance = user.data[0]['balance'] if user.data else 0
+    balance = ts_orders.get_account_balance('SIM1169695F')
     logging.info(f"Balance for user {session['user_id']}: {balance}")
     return jsonify({'balance': balance})
 
@@ -126,28 +122,24 @@ def get_balance():
 def get_positions():
     logging.info(f"Fetching positions for user {session['user_id']}")
     try:
-        position = nt_connection.get_current_position()
-        logging.info(f"Retrieved position: {position}")
-        
+        positions = ts_orders.get_positions('SIM1169695F')
         latest_data = ts_connection.get_latest_data()
-        logging.info(f"Latest market data: {latest_data}")
         
-        current_price = float(latest_data.get('Close', 0))
-        logging.info(f"Current price: {current_price}")
+        position_data = []
+        for position in positions:
+            current_price = float(latest_data.get('Close', 0))
+            unrealized_pl = (current_price - position['average_price']) * position['quantity']
+            
+            position_data.append({
+                'symbol': position['symbol'],
+                'quantity': position['quantity'],
+                'average_price': position['average_price'],
+                'current_value': current_price * abs(position['quantity']),
+                'unrealized_pl': unrealized_pl
+            })
         
-        unrealized_pl = (current_price - position['average_price']) * position['quantity']
-        logging.info(f"Calculated unrealized P/L: {unrealized_pl}")
-        
-        position_data = {
-            'symbol': nt_connection.SYMBOL,
-            'quantity': position['quantity'],
-            'average_price': position['average_price'],
-            'current_value': current_price * abs(position['quantity']),
-            'unrealized_pl': unrealized_pl
-        }
-        
-        logging.info(f"Final position data: {position_data}")
-        return jsonify({'positions': [position_data] if position_data['quantity'] != 0 else []})
+        logging.info(f"Positions data for user {session['user_id']}: {position_data}")
+        return jsonify({'positions': position_data})
     except Exception as e:
         logging.error(f"Error fetching positions: {str(e)}")
         return jsonify({'error': 'Unable to fetch positions at this time'}), 500
@@ -158,34 +150,47 @@ def place_trade():
     data = request.json
     logging.info(f"Trade request received: {data}")
     
-    action = data['action']
-    quantity = int(data['quantity'])
+    action = data.get('action')
+    quantity = data.get('quantity')
+    symbol = data.get('symbol')
     
-    logging.info(f"Trade request: User {session['user_id']} - {action} {quantity} contracts")
+    if not all([action, quantity, symbol]):
+        logging.error(f"Invalid trade request: Missing required fields. Data: {data}")
+        return jsonify({'success': False, 'message': 'Invalid trade request: Missing required fields'}), 400
     
-    order_result = nt_connection.place_order(action, quantity)
+    try:
+        quantity = int(quantity)
+    except ValueError:
+        logging.error(f"Invalid quantity: {quantity}. Must be an integer.")
+        return jsonify({'success': False, 'message': 'Invalid quantity: Must be an integer'}), 400
     
-    if order_result['status'] == 'FILLED':
-        logging.info(f"Order filled: {order_result}")
+    logging.info(f"Placing trade: User {session['user_id']} - {action} {quantity} {symbol}")
+    
+    try:
+        order_result = ts_orders.place_order('SIM1169695F', symbol, action, quantity)
+        logging.info(f"Order result: {order_result}")
         
-        # Update the position
-        current_position = nt_connection.update_position(action, quantity, order_result['fill_price'])
-        logging.info(f"Updated position after trade: {current_position}")
-        
-        return jsonify({
-            'success': True, 
-            'message': f'{action.capitalize()} order for {quantity} contracts filled at {order_result["fill_price"]}.', 
-            'current_position': current_position
-        })
-    elif order_result['status'] == 'PLACED':
-        logging.info(f"Order placed: {order_result}")
-        return jsonify({
-            'success': True, 
-            'message': f'{action.capitalize()} order for {quantity} contracts placed. Order ID: {order_result["order_id"]}',
-        })
-    else:
-        logging.error(f"Failed to place order: {order_result}")
-        return jsonify({'success': False, 'message': 'Failed to place order'})
+        if order_result['status'] == 'Filled':
+            logging.info(f"Order filled: {order_result}")
+            return jsonify({
+                'success': True,
+                'message': f'{action.capitalize()} order for {quantity} {symbol} filled at {order_result["fill_price"]}.',
+                'order_details': order_result
+            })
+        elif order_result['status'] == 'Working':
+            logging.info(f"Order working: {order_result}")
+            return jsonify({
+                'success': True,
+                'message': f'{action.capitalize()} order for {quantity} {symbol} placed. Order ID: {order_result["order_id"]}',
+                'order_details': order_result
+            })
+        else:
+            logging.error(f"Unexpected order status: {order_result}")
+            return jsonify({'success': False, 'message': f'Unexpected order status: {order_result["status"]}'})
+    except Exception as e:
+        logging.error(f"Error placing order: {str(e)}")
+        logging.error(traceback.format_exc())
+        return jsonify({'success': False, 'message': f'Failed to place order: {str(e)}'}), 500
 
 @app.route('/api/market_data')
 @login_required
@@ -199,24 +204,7 @@ def get_market_data():
 def get_account_summary():
     logging.info(f"Fetching account summary for user {session['user_id']}")
     try:
-        user = supabase.table('users').select('balance').eq('id', session['user_id']).execute().data[0]
-        balance = user['balance']
-        
-        position = nt_connection.get_current_position()
-        latest_data = ts_connection.get_latest_data()
-        current_price = float(latest_data.get('Close', 0))
-        
-        unrealized_pl = (current_price - position['average_price']) * position['quantity']
-        equity = balance + unrealized_pl
-        
-        account_summary = {
-            'balance': balance,
-            'equity': equity,
-            'unrealized_pl': unrealized_pl,
-            'realized_pl': 0,  # Placeholder
-            'daily_pl': 0  # Placeholder
-        }
-        
+        account_summary = ts_orders.get_account_summary('SIM1169695F')
         logging.info(f"Account summary for user {session['user_id']}: {account_summary}")
         return jsonify(account_summary)
     except Exception as e:
@@ -236,16 +224,15 @@ def reset_user(username):
 
         user_id = user.data[0]['id']
 
-        # Reset user balance
+        # Reset user balance in Supabase
         supabase.table('users').update({'balance': 100000.0}).eq('id', user_id).execute()
-        logging.info(f"Balance reset for user {username}")
+        logging.info(f"Balance reset for user {username} in Supabase")
         
-        # Reset position
-        nt_connection.reset_position()
-        logging.info(f"Position reset for user {username}")
+        # Note: We can't reset the TradeStation account balance directly
+        # You might want to add a note here about manually resetting the TradeStation sim account if needed
         
         logging.info(f"User data reset successfully for user {username}")
-        return jsonify({'success': True, 'message': f'User data reset successfully for {username}'})
+        return jsonify({'success': True, 'message': f'User data reset successfully for {username} in Supabase. TradeStation account may need manual reset.'})
     except Exception as e:
         logging.error(f"Failed to reset user data for {username}: {str(e)}")
         return jsonify({'success': False, 'message': 'Failed to reset user data'}), 500

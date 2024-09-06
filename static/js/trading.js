@@ -51,20 +51,21 @@ function updateMarketData() {
 
 function placeTrade(action) {
     const quantity = document.getElementById('quantity').value;
+    const symbol = '@NQU24';  // Add this line
     
     if (!quantity) {
         alert('Please enter a quantity');
         return;
     }
 
-    console.log(`Placing trade: ${action} ${quantity}`);
+    console.log(`Placing trade: ${action} ${quantity} ${symbol}`);
 
     fetch('/api/trade', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ action, quantity: parseInt(quantity) }),
+        body: JSON.stringify({ action, quantity: parseInt(quantity), symbol }),  // Add symbol here
     })
     .then(response => response.json())
     .then(data => {
@@ -77,9 +78,11 @@ function placeTrade(action) {
             alert(`Error: ${data.message}`);
         }
     })
-    .catch(error => console.error('Error placing trade:', error));
+    .catch(error => {
+        console.error('Error placing trade:', error);
+        alert(`Error placing trade: ${error.message}`);
+    });
 }
-
 // Initial updates
 updateBalance();
 updatePositions();
