@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto px-4 py-8">
+        <header class="flex justify-between items-center mb-8">
+            <h1 class="text-3xl font-bold">Welcome, {{ username }}</h1>
+            <a href="{{ url_for('logout') }}" class="bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded">Logout</a>
+        </header>
+        
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+            <div class="bg-white shadow-md rounded px-8 pt-6 pb-8">
+                <h2 class="text-xl font-semibold mb-4">@MNQ Price</h2>
+                <p class="text-4xl font-bold text-blue-600">$<span id="mnq-price">Loading...</span></p>
+            </div>
+
+            <div class="bg-white shadow-md rounded px-8 pt-6 pb-8">
+                <h2 class="text-xl font-semibold mb-4">Account Summary</h2>
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <p class="text-sm font-medium text-gray-600">Balance:</p>
+                        <p class="text-lg font-bold" id="balance">$0.00</p>
+                    </div>
+                    <div>
+                        <p class="text-sm font-medium text-gray-600">Equity:</p>
+                        <p class="text-lg font-bold" id="equity">$0.00</p>
+                    </div>
+                    <div>
+                        <p class="text-sm font-medium text-gray-600">Realized P/L:</p>
+                        <p class="text-lg font-bold" id="realized-pl">$0.00</p>
+                    </div>
+                    <div>
+                        <p class="text-sm font-medium text-gray-600">Unrealized P/L:</p>
+                        <p class="text-lg font-bold" id="unrealized-pl">$0.00</p>
+                    </div>
+                    <div>
+                        <p class="text-sm font-medium text-gray-600">Daily P/L:</p>
+                        <p class="text-lg font-bold" id="daily-pl">$0.00</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white shadow-md rounded px-8 pt-6 pb-8 mb-8">
+            <h2 class="text-xl font-semibold mb-4">Trading</h2>
+            <div class="flex flex-wrap items-center gap-4 mb-6">
+                <div>
+                    <span class="text-gray-600 mr-2">Position:</span>
+                    <span id="position-quantity" class="font-semibold">0</span>
+                    <span class="text-gray-600 ml-1">contracts</span>
+                </div>
+                <div>
+                    <span class="text-gray-600 mr-2">Avg Price:</span>
+                    <span id="position-avg-price" class="font-semibold">$0.00</span>
+                </div>
+            </div>
+            <div class="flex flex-col sm:flex-row items-center gap-4">
+                <input id="quantity" type="number" min="1" value="1" class="shadow appearance-none border rounded w-full sm:w-24 py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:shadow-outline">
+                <button onclick="placeTrade('buy')" class="bg-green-500 hover:bg-green-700 text-white font-bold py-2 px-4 rounded w-full sm:w-auto flex-1">
+                    Buy
+                </button>
+                <button onclick="placeTrade('sell')" class="bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded w-full sm:w-auto flex-1">
+                    Sell
+                </button>
+            </div>
+        </div>
+
+        <div class="bg-white shadow-md rounded px-8 pt-6 pb-8">
+            <h2 class="text-xl font-semibold mb-4">Positions</h2>
+            <div class="overflow-x-auto">
+                <table class="min-w-full leading-normal">
+                    <thead>
+                        <tr>
+                            <th class="px-5 py-3 border-b-2 border-gray-200 bg-gray-100 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                Symbol
+                            </th>
+                            <th class="px-5 py-3 border-b-2 border-gray-200 bg-gray-100 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                Quantity
+                            </th>
+                            <th class="px-5 py-3 border-b-2 border-gray-200 bg-gray-100 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                Average Price
+                            </th>
+                            <th class="px-5 py-3 border-b-2 border-gray-200 bg-gray-100 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                Current Value
+                            </th>
+                            <th class="px-5 py-3 border-b-2 border-gray-200 bg-gray-100 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                Unrealized P/L
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody id="positions-body">
+                        <!-- Positions will be populated here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/trading.js') }}"></script>
+</body>
+</html>
